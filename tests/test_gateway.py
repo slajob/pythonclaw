@@ -187,6 +187,59 @@ def test_ls_and_read_file_tools() -> None:
         assert "not in allowed_paths" in reply.content
 
 
+def test_setup_wizard_non_interactive() -> None:
+    from pythonclaw.setup import Answers, apply
+    from pythonclaw import dotenv as _dotenv
+
+    with tempfile.TemporaryDirectory() as d:
+        cfg_path = Path(d) / "pythonclaw.config.json"
+        data_dir = Path(d) / "data"
+        summary = apply(Answers(
+            config_path=cfg_path, data_dir=data_dir,
+            openai_key="sk-xxx", openai_model="gpt-4o", make_gpt_default=True,
+            telegram_token="123:abc", enable_telegram=True,
+        ))
+        # config written and contains the new pieces
+        assert cfg_path.exists()
+        cfg = json.loads(cfg_path.read_text())
+        assert cfg["router"]["default_agent"] == "gpt"
+        assert cfg["providers"]["openai"]["model"] == "gpt-4o"
+        assert cfg["channels"]["telegram"]["enabled"] is True
+        assert "gpt" in cfg["agents"]
+        # .env written with secrets
+        env_path = data_dir / ".env"
+        assert env_path.exists()
+        env = _dotenv.load(env_path)
+        assert env["OPENAI_API_KEY"] == "sk-xxx"
+        assert env["TELEGRAM_BOT_TOKEN"] == "123:abc"
+        assert summary["openai_configured"] is True
+        assert summary["telegram_configured"] is True
+
+        # re-running is safe (idempotent merge, no crash)
+        summary2 = apply(Answers(
+            config_path=cfg_path, data_dir=data_dir,
+            openai_model="gpt-5-mini"))
+        cfg2 = json.loads(cfg_path.read_text())
+        assert cfg2["providers"]["openai"]["model"] == "gpt-5-mini"
+        assert summary2["telegram_configured"] is True  # preserved
+
+
+def test_gateway_loads_dotenv() -> None:
+    from pythonclaw import dotenv as _dotenv
+    import os
+    with tempfile.TemporaryDirectory() as d:
+        data_dir = Path(d) / "data"
+        data_dir.mkdir()
+        _dotenv.save(data_dir / ".env",
+                     {"PYTHONCLAW_TEST_ENV_KEY": "from-dotenv"})
+        os.environ.pop("PYTHONCLAW_TEST_ENV_KEY", None)
+        cfg = _fresh_config(Path(d))
+        cfg.raw["gateway"]["data_dir"] = str(data_dir)
+        Gateway(cfg)
+        assert os.environ.get("PYTHONCLAW_TEST_ENV_KEY") == "from-dotenv"
+        os.environ.pop("PYTHONCLAW_TEST_ENV_KEY", None)
+
+
 def test_dashboard_http() -> None:
     with tempfile.TemporaryDirectory() as d:
         gw = Gateway(_fresh_config(Path(d)))
@@ -226,6 +279,11 @@ def test_dashboard_http() -> None:
                 assert any(o["agent"] == "gpt" and o["model"] == "gpt-4o"
                            for o in body["options"])
 
+            with urllib.request.urlopen(f"http://{host}:{port}/api/settings", timeout=3) as r:
+                body = json.loads(r.read())
+                assert "openai" in body and "telegram" in body
+                assert "router" in body and body["router"]["default"] == "pi"
+
             payload = json.dumps({
                 "session_id": "ui-test", "text": "pick me",
                 "agent": "gpt", "model": "gpt-5-mini",
@@ -250,5 +308,7 @@ if __name__ == "__main__":
     test_shell_tool_disabled_by_default(); print("test_shell_tool_disabled_by_default OK")
     test_shell_tool_allowlist(); print("test_shell_tool_allowlist OK")
     test_ls_and_read_file_tools(); print("test_ls_and_read_file_tools OK")
+    test_setup_wizard_non_interactive(); print("test_setup_wizard_non_interactive OK")
+    test_gateway_loads_dotenv(); print("test_gateway_loads_dotenv OK")
     test_dashboard_http(); print("test_dashboard_http OK")
     print("all tests passed")

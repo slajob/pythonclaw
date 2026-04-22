@@ -43,12 +43,20 @@ is optional for YAML configs).
 
 ## Install & run
 
+Fastest path (interactive onboarding):
+
 ```bash
-# from the repo root, no install required:
+python -m pythonclaw setup        # prompts for OpenAI key, Telegram token, etc.
+python -m pythonclaw run --config ./pythonclaw.config.json
+# dashboard → http://127.0.0.1:18789
+```
+
+Or manually:
+
+```bash
 python -m pythonclaw init --path pythonclaw.config.json
 python -m pythonclaw info --config pythonclaw.config.json
 python -m pythonclaw run  --config pythonclaw.config.json
-# dashboard → http://127.0.0.1:18789
 ```
 
 Or install as a package:
@@ -65,6 +73,44 @@ python -m pythonclaw send --text "hello"                  # print reply and exit
 python -m pythonclaw send --text "@tool calc expr=2+3*4"  # -> 14.0
 python -m pythonclaw chat                                 # interactive REPL
 python -m pythonclaw chat --agent coder                   # force agent
+```
+
+### Onboarding wizard
+
+`pythonclaw setup` walks you through configuring OpenAI and Telegram. It:
+
+1. Creates / merges into `./pythonclaw.config.json`.
+2. Writes secrets to `./.pythonclaw/.env` (`chmod 600`).
+3. Adds a `gpt` agent wired to the OpenAI provider if you supply a key.
+4. Optionally sets `gpt` as the router default.
+5. Optionally enables the Telegram channel with the token you pass.
+
+The gateway **auto-loads `./.pythonclaw/.env`** at startup (existing env vars
+win), so after `setup` you can just `pythonclaw run` — no manual `export`.
+
+Non-interactive (CI / automation):
+
+```bash
+python -m pythonclaw setup --non-interactive \
+  --config ./pythonclaw.config.json \
+  --openai-key "$OPENAI_API_KEY" --openai-model gpt-4o --gpt-default \
+  --telegram-token "$TELEGRAM_BOT_TOKEN" --enable-telegram
+```
+
+From the **dashboard**: click the `settings` button in the header. The modal
+shows the current status (chips for `openai: on/off`, `telegram: on/off`),
+lets you paste new secrets and choose defaults. Save writes to the same
+config + `.env` files as the CLI; a banner tells you to restart for the
+change to take effect (providers and channels are built at boot).
+
+API:
+
+```bash
+curl -s http://127.0.0.1:18789/api/settings     # GET status
+curl -s -X POST http://127.0.0.1:18789/api/settings \
+  -H 'content-type: application/json' \
+  -d '{"openai_key":"sk-...","openai_model":"gpt-4o","gpt_default":true,
+       "telegram_token":"123:abc","enable_telegram":true}'
 ```
 
 ### Host access (shell / ls / read_file)

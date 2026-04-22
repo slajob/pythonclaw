@@ -41,20 +41,51 @@ _INDEX_HTML = """<!doctype html>
   .meta { font-size: 11px; opacity: .6; margin-top: 4px; }
   #log .row { display: flex; }
   form { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #8885; }
-  input[type=text] { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #8885; }
-  button { padding: 10px 14px; border-radius: 8px; border: 0; background: #2563eb; color: white; cursor: pointer; }
+  input[type=text], input[type=password] { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #8885; font: inherit; }
+  button { padding: 10px 14px; border-radius: 8px; border: 0; background: #2563eb; color: white; cursor: pointer; font: inherit; }
   button.secondary { background: #64748b; }
+  #banner { background: #fde68a; color: #78350f; padding: 8px 14px; display: none; font-size: 13px; }
+  #modal { position: fixed; inset: 0; background: #0007; display: none; align-items: center; justify-content: center; z-index: 10; }
+  #modal.show { display: flex; }
+  #modal .card { background: Canvas; color: CanvasText; border-radius: 12px; padding: 18px 20px; min-width: 380px; max-width: 520px; width: 90%; box-shadow: 0 10px 40px #0008; }
+  #modal h3 { margin: 0 0 10px; }
+  #modal label { display: block; font-size: 12px; opacity: .75; margin-top: 10px; }
+  #modal input, #modal select { width: 100%; padding: 9px 10px; border-radius: 8px; border: 1px solid #8885; font: inherit; box-sizing: border-box; }
+  #modal .row2 { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  .chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: #cbd5e1; color: #0f172a; }
+  .chip.ok { background: #bbf7d0; color: #064e3b; }
 </style>
 </head><body>
 <header>
   <span>pythonclaw</span>
   <small id="meta">loading…</small>
   <span style="margin-left:auto"></span>
+  <span class="chip" id="chip-openai">openai: ?</span>
+  <span class="chip" id="chip-telegram">telegram: ?</span>
   <label for="model" style="font-weight:400;font-size:12px;opacity:.7">model</label>
   <select id="model" title="Pick an agent / model"></select>
+  <button class="secondary" id="settings">settings</button>
   <button class="secondary" id="new">new session</button>
 </header>
+<div id="banner"></div>
 <div id="log"></div>
+<div id="modal"><div class="card">
+  <h3>Settings</h3>
+  <label>OpenAI API key <small id="s-openai-state" style="opacity:.6"></small></label>
+  <input type="password" id="s-openai-key" autocomplete="off" placeholder="sk-...">
+  <label>Default OpenAI model</label>
+  <select id="s-openai-model">
+    <option>gpt-5-mini</option><option>gpt-4o</option><option>gpt-5.2</option>
+  </select>
+  <label>Telegram bot token <small id="s-telegram-state" style="opacity:.6"></small></label>
+  <input type="password" id="s-telegram-token" autocomplete="off" placeholder="123456:ABC-...">
+  <label><input type="checkbox" id="s-enable-telegram"> enable Telegram channel</label>
+  <label><input type="checkbox" id="s-gpt-default"> make "gpt" the default agent</label>
+  <div class="row2">
+    <button class="secondary" id="s-cancel">cancel</button>
+    <button id="s-save">save</button>
+  </div>
+</div></div>
 <form id="f">
   <input id="t" type="text" autocomplete="off" placeholder="message…" autofocus>
   <button>send</button>
@@ -92,6 +123,59 @@ async function loadModels() {
     else localStorage.removeItem("pc_model");
   };
 }
+async function loadSettings() {
+  const r = await fetch("/api/settings"); const j = await r.json();
+  const oc = document.getElementById("chip-openai");
+  oc.textContent = "openai: " + (j.openai.configured ? "on" : "off");
+  oc.className = "chip" + (j.openai.configured ? " ok" : "");
+  const tc = document.getElementById("chip-telegram");
+  tc.textContent = "telegram: " + (j.telegram.enabled ? "on" : (j.telegram.configured ? "off" : "—"));
+  tc.className = "chip" + (j.telegram.enabled ? " ok" : "");
+  document.getElementById("s-openai-state").textContent =
+    j.openai.has_key ? "(key currently set)" : "(not set)";
+  document.getElementById("s-telegram-state").textContent =
+    j.telegram.has_token ? "(token currently set)" : "(not set)";
+  document.getElementById("s-openai-model").value = j.openai.model || "gpt-4o";
+  document.getElementById("s-enable-telegram").checked = !!j.telegram.enabled;
+  document.getElementById("s-gpt-default").checked = j.router.default === "gpt";
+  if (j.restart_required) showBanner("Settings changed. Restart pythonclaw to apply.");
+}
+function showBanner(text) {
+  const b = document.getElementById("banner");
+  b.textContent = text; b.style.display = "block";
+}
+document.getElementById("settings").onclick = async () => {
+  await loadSettings();
+  document.getElementById("modal").classList.add("show");
+};
+document.getElementById("s-cancel").onclick = () =>
+  document.getElementById("modal").classList.remove("show");
+document.getElementById("s-save").onclick = async () => {
+  const body = {
+    openai_model: document.getElementById("s-openai-model").value,
+    enable_telegram: document.getElementById("s-enable-telegram").checked,
+    gpt_default: document.getElementById("s-gpt-default").checked,
+  };
+  const ok = document.getElementById("s-openai-key").value.trim();
+  if (ok) body.openai_key = ok;
+  const tk = document.getElementById("s-telegram-token").value.trim();
+  if (tk) body.telegram_token = tk;
+  const r = await fetch("/api/settings", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const j = await r.json();
+  if (!r.ok) { alert(j.error || "save failed"); return; }
+  document.getElementById("s-openai-key").value = "";
+  document.getElementById("s-telegram-token").value = "";
+  document.getElementById("modal").classList.remove("show");
+  showBanner(j.restart_required
+    ? "Settings saved. Restart pythonclaw to apply channel / provider changes."
+    : "Settings saved.");
+  await loadSettings();
+  await loadModels();
+};
+
 function add(role, text, meta) {
   const log = document.getElementById("log");
   const row = document.createElement("div"); row.className = "row";
@@ -133,7 +217,7 @@ document.getElementById("f").onsubmit = async (ev) => {
     add("system", j.error || "(no reply)");
   }
 };
-info(); loadModels(); loadHistory();
+info(); loadModels(); loadSettings(); loadHistory();
 </script>
 </body></html>
 """
@@ -243,6 +327,9 @@ def _make_handler(dash: "Dashboard"):
             if path == "/api/models":
                 self._json(200, _ui_models_payload(dash.gateway))
                 return
+            if path == "/api/settings":
+                self._json(200, _settings_payload(dash.gateway))
+                return
             self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
@@ -251,6 +338,8 @@ def _make_handler(dash: "Dashboard"):
                 self._json(401, {"error": "unauthorized"}); return
             if path == "/api/chat":
                 self._handle_chat(); return
+            if path == "/api/settings":
+                self._handle_settings_update(); return
             if path == "/v1/chat/completions":
                 self._handle_openai_completions(); return
             if path == "/slack/events":
@@ -303,6 +392,14 @@ def _make_handler(dash: "Dashboard"):
             except Exception as e:  # noqa: BLE001
                 self._json(500, {"error": str(e)}); return
             self._json(200, _openai_response(body, reply))
+
+        def _handle_settings_update(self) -> None:
+            body = self._read_json() or {}
+            try:
+                result = _apply_settings_from_dashboard(dash.gateway, body)
+            except Exception as e:  # noqa: BLE001
+                self._json(500, {"error": str(e)}); return
+            self._json(200, result)
 
         def _handle_slack_events(self) -> None:
             body = self._read_json() or {}
@@ -388,6 +485,57 @@ def _openai_models_payload(gw: Gateway) -> dict[str, Any]:
                          "owned_by": "pythonclaw"})
             seen.add(agent_name)
     return {"object": "list", "data": data}
+
+
+def _settings_payload(gw: Gateway) -> dict[str, Any]:
+    """Onboarding status for the dashboard's settings modal."""
+    import os
+    from pathlib import Path
+    openai_cfg = gw.config.providers.get("openai", {})
+    openai_key_env = openai_cfg.get("api_key_env") or "OPENAI_API_KEY"
+    telegram_cfg = gw.config.channels.get("telegram", {})
+    telegram_env = telegram_cfg.get("token_env") or "TELEGRAM_BOT_TOKEN"
+    data_dir = Path(gw.config.gateway.get("data_dir", "./.pythonclaw"))
+    return {
+        "openai": {
+            "configured": bool(openai_cfg),
+            "has_key": bool(os.environ.get(openai_key_env)),
+            "model": openai_cfg.get("model"),
+            "allowed_models": openai_cfg.get("allowed_models") or [],
+        },
+        "telegram": {
+            "configured": bool(telegram_cfg),
+            "enabled": bool(telegram_cfg.get("enabled")),
+            "has_token": bool(os.environ.get(telegram_env)),
+        },
+        "router": {"default": gw.router.default_agent},
+        "data_dir": str(data_dir),
+        "env_file": str(data_dir / ".env"),
+    }
+
+
+def _apply_settings_from_dashboard(gw: Gateway, body: dict[str, Any]) -> dict[str, Any]:
+    """Persist dashboard onboarding form using the same logic as the CLI wizard."""
+    from pathlib import Path
+    from ..setup import Answers, apply
+
+    cfg_path: Path | None = gw.config.path  # type: ignore[assignment]
+    if cfg_path is None:
+        return {"error": "gateway was started with an in-memory config; "
+                         "save a config file first (pythonclaw init)"}
+    data_dir = Path(gw.config.gateway.get("data_dir", "./.pythonclaw"))
+    answers = Answers(
+        config_path=cfg_path,
+        data_dir=data_dir,
+        openai_key=body.get("openai_key") or None,
+        openai_model=body.get("openai_model") or "gpt-4o",
+        make_gpt_default=bool(body.get("gpt_default")),
+        telegram_token=body.get("telegram_token") or None,
+        enable_telegram=bool(body.get("enable_telegram")),
+    )
+    summary = apply(answers)
+    summary["restart_required"] = True
+    return summary
 
 
 def _resolve_openai_model(gw: Gateway, model: str | None) -> tuple[str | None, str | None]:

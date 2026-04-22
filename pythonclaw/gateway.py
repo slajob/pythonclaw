@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import channels as chan_mod
+from . import dotenv
 from . import providers as prov_mod
 from . import tools as tool_registry
 from .agents import Agent, Router
@@ -33,6 +34,7 @@ class Gateway:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._ensure_data_dir()
+        self._load_dotenv()
         tool_registry.configure(config.tools)
         self.memory = self._build_memory()
         self.providers: dict[str, Provider] = self._build_providers()
@@ -46,6 +48,18 @@ class Gateway:
     def _ensure_data_dir(self) -> None:
         d = self.config.gateway.get("data_dir", "./.pythonclaw")
         Path(d).mkdir(parents=True, exist_ok=True)
+
+    def _load_dotenv(self) -> None:
+        """Pick up secrets written by the setup wizard.
+
+        The file lives at ``<data_dir>/.env`` and contains ``KEY="value"``
+        lines. Existing env vars win so CI / shell exports keep priority.
+        """
+        data_dir = Path(self.config.gateway.get("data_dir", "./.pythonclaw"))
+        env_path = data_dir / ".env"
+        if env_path.exists():
+            dotenv.apply_to_env(dotenv.load(env_path))
+            log.debug("loaded env from %s", env_path)
 
     def _build_memory(self) -> SqliteMemory:
         mem = self.config.memory
