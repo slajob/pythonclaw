@@ -10,7 +10,8 @@
     "default_agent": "pi",
     "rules": [
       { "match": { "startswith": "@code" }, "agent": "coder" },
-      { "match": { "startswith": "@pi" },   "agent": "pi" }
+      { "match": { "startswith": "@pi" },   "agent": "pi" },
+      { "match": { "startswith": "@gpt" },  "agent": "gpt" }
     ]
   },
   "agents": {
@@ -23,6 +24,12 @@
       "provider": "echo",
       "system": "You are Coder, a senior software engineer.",
       "tools": ["time", "calc"]
+    },
+    "gpt": {
+      "provider": "openai",
+      "system": "You are GPT, a helpful AI assistant.",
+      "model": "gpt-4o",
+      "tools": ["time", "calc", "web_search"]
     }
   },
   "providers": {
@@ -31,7 +38,8 @@
       "type": "openai",
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
-      "model": "gpt-4o-mini"
+      "model": "gpt-4o",
+      "allowed_models": ["gpt-5-mini", "gpt-4o", "gpt-5.2"]
     },
     "anthropic": {
       "type": "anthropic",

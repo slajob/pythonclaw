@@ -26,6 +26,7 @@ def build(name: str, cfg: dict[str, Any]) -> Provider:
             api_key=_resolve_key(cfg),
             model=cfg.get("model", "gpt-4o-mini"),
             timeout=cfg.get("timeout", 60),
+            allowed_models=cfg.get("allowed_models"),
         )
     if t == "anthropic":
         return AnthropicProvider(

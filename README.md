@@ -66,6 +66,52 @@ python -m pythonclaw chat                                 # interactive REPL
 python -m pythonclaw chat --agent coder                   # force agent
 ```
 
+### Model selection
+
+The dashboard has a **model dropdown** in the header. It lists one option per
+`(agent, model)` pair derived from your config:
+
+- every agent's own `model`
+- every entry in the agent's provider's `allowed_models`
+
+Picking `gpt · gpt-4o (openai)` sends `{ agent: "gpt", model: "gpt-4o" }` on
+every subsequent `/api/chat` call, so you can hot-swap models without
+restarting. The choice is persisted in `localStorage`.
+
+The default OpenAI provider in [`configs/example.json`](configs/example.json)
+ships with:
+
+```json
+"openai": {
+  "type": "openai",
+  "base_url": "https://api.openai.com/v1",
+  "api_key_env": "OPENAI_API_KEY",
+  "model": "gpt-4o",
+  "allowed_models": ["gpt-5-mini", "gpt-4o", "gpt-5.2"]
+}
+```
+
+Set `OPENAI_API_KEY` in your environment and use the `gpt` agent:
+
+```bash
+export OPENAI_API_KEY=sk-...
+python -m pythonclaw run --config configs/example.json
+# then pick a model in the dashboard, or:
+curl -s http://127.0.0.1:18789/api/chat \
+  -H 'content-type: application/json' \
+  -d '{"text":"hi","agent":"gpt","model":"gpt-5-mini"}'
+```
+
+Requests for a model that isn't on the provider's `allowed_models` list are
+rejected before any network call.
+
+Programmatic listing:
+
+```bash
+curl -s http://127.0.0.1:18789/api/models   # dropdown-friendly, with agents
+curl -s http://127.0.0.1:18789/v1/models    # OpenAI-compatible
+```
+
 ### OpenAI-compatible API
 
 ```bash
@@ -76,7 +122,8 @@ curl -s http://127.0.0.1:18789/v1/chat/completions \
 
 Point any OpenAI SDK (Python / JS / langchain / …) at
 `http://127.0.0.1:18789/v1` with `api_key="pythonclaw"` (or your configured
-`auth_token`) and it will talk to the gateway.
+`auth_token`) and it will talk to the gateway. The `model` field is mapped to
+a configured agent or a concrete model on a provider's `allowed_models` list.
 
 ## Configuration
 

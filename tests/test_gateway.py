@@ -27,6 +27,8 @@ def _fresh_config(tmp: Path, port: int = 0) -> Config:
                    "tools": ["time", "calc"]},
             "coder": {"provider": "echo", "system": "coder-sys",
                       "tools": ["time", "calc"]},
+            "gpt": {"provider": "echo", "system": "gpt-sys",
+                    "model": "gpt-4o", "tools": []},
         },
         "providers": {"echo": {"type": "echo"}},
         "channels": {"webchat": {"type": "webchat", "enabled": True}},
@@ -70,6 +72,45 @@ def test_tool_call_dispatch() -> None:
         assert reply.content.strip() == "14.0"
 
 
+def test_model_and_agent_override() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        gw = Gateway(_fresh_config(Path(d)))
+        session = Session.new(channel="test", user="u")
+
+        # explicit agent override wins over router rules
+        reply = gw.handle(Message(
+            role="user", content="@code but via gpt",
+            channel="test", session_id=session.id,
+            meta={"agent": "gpt"}))
+        assert reply.agent == "gpt"
+
+        # model override is echoed back in reply.meta
+        reply = gw.handle(Message(
+            role="user", content="hi",
+            channel="test", session_id=session.id,
+            meta={"agent": "gpt", "model": "gpt-5-mini"}))
+        assert reply.meta["model"] == "gpt-5-mini"
+
+
+def test_openai_provider_allowed_models() -> None:
+    from pythonclaw.providers import OpenAIProvider
+    from pythonclaw.providers.base import CompletionRequest, ProviderError
+
+    p = OpenAIProvider(name="openai", base_url="https://example.invalid/v1",
+                       api_key=None, model="gpt-4o",
+                       allowed_models=["gpt-5-mini", "gpt-4o", "gpt-5.2"])
+    info = p.info()
+    assert info["allowed_models"] == ["gpt-5-mini", "gpt-4o", "gpt-5.2"]
+    assert info["default_model"] == "gpt-4o"
+    # rejected before any network call
+    try:
+        p.complete(CompletionRequest(messages=[], model="not-on-list"))
+    except ProviderError as e:
+        assert "not in allowed_models" in str(e)
+    else:
+        raise AssertionError("expected ProviderError")
+
+
 def test_dashboard_http() -> None:
     with tempfile.TemporaryDirectory() as d:
         gw = Gateway(_fresh_config(Path(d)))
@@ -102,6 +143,24 @@ def test_dashboard_http() -> None:
                 body = json.loads(r.read())
                 assert body["choices"][0]["message"]["content"]
                 assert body["object"] == "chat.completion"
+                assert body["pythonclaw"]["agent"] == "pi"
+
+            with urllib.request.urlopen(f"http://{host}:{port}/api/models", timeout=3) as r:
+                body = json.loads(r.read())
+                assert any(o["agent"] == "gpt" and o["model"] == "gpt-4o"
+                           for o in body["options"])
+
+            payload = json.dumps({
+                "session_id": "ui-test", "text": "pick me",
+                "agent": "gpt", "model": "gpt-5-mini",
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://{host}:{port}/api/chat", data=payload,
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=3) as r:
+                body = json.loads(r.read())
+                assert body["reply"]["agent"] == "gpt"
+                assert body["reply"]["meta"]["model"] == "gpt-5-mini"
         finally:
             dash.stop(); gw.stop()
 
@@ -110,5 +169,7 @@ if __name__ == "__main__":
     test_router_rules(); print("test_router_rules OK")
     test_gateway_end_to_end(); print("test_gateway_end_to_end OK")
     test_tool_call_dispatch(); print("test_tool_call_dispatch OK")
+    test_model_and_agent_override(); print("test_model_and_agent_override OK")
+    test_openai_provider_allowed_models(); print("test_openai_provider_allowed_models OK")
     test_dashboard_http(); print("test_dashboard_http OK")
     print("all tests passed")
