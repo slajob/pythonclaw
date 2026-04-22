@@ -62,6 +62,8 @@ _INDEX_HTML = """<!doctype html>
   <span style="margin-left:auto"></span>
   <span class="chip" id="chip-openai">openai: ?</span>
   <span class="chip" id="chip-telegram">telegram: ?</span>
+  <label for="sessionsel" style="font-weight:400;font-size:12px;opacity:.7">session</label>
+  <select id="sessionsel" title="Switch session"></select>
   <label for="model" style="font-weight:400;font-size:12px;opacity:.7">model</label>
   <select id="model" title="Pick an agent / model"></select>
   <button class="secondary" id="settings">settings</button>
@@ -123,6 +125,30 @@ async function loadModels() {
     else localStorage.removeItem("pc_model");
   };
 }
+async function loadSessions() {
+  const r = await fetch("/api/sessions"); if (!r.ok) return;
+  const j = await r.json();
+  const sel = document.getElementById("sessionsel");
+  sel.innerHTML = "";
+  const cur = document.createElement("option");
+  cur.value = ""; cur.textContent = "(current)";
+  sel.appendChild(cur);
+  for (const s of j.sessions || []) {
+    const o = document.createElement("option");
+    const ts = new Date((s.created || 0) * 1000).toISOString().slice(5, 16).replace("T", " ");
+    o.value = s.id;
+    o.textContent = `${ts} · ${s.channel}${s.agent ? " · " + s.agent : ""} · ${s.id.slice(0,6)}`;
+    sel.appendChild(o);
+  }
+  if (sessionId) sel.value = sessionId;
+  sel.onchange = async () => {
+    if (!sel.value) return;
+    sessionId = sel.value; localStorage.setItem("pc_session", sessionId);
+    document.getElementById("log").innerHTML = "";
+    await loadHistory();
+  };
+}
+
 async function loadSettings() {
   const r = await fetch("/api/settings"); const j = await r.json();
   const oc = document.getElementById("chip-openai");
@@ -196,6 +222,7 @@ document.getElementById("new").onclick = () => {
   sessionId = null; localStorage.removeItem("pc_session");
   document.getElementById("log").innerHTML = "";
   add("system", "(new session)", null);
+  loadSessions();
 };
 document.getElementById("f").onsubmit = async (ev) => {
   ev.preventDefault();
@@ -208,6 +235,7 @@ document.getElementById("f").onsubmit = async (ev) => {
     body: JSON.stringify(body),
   });
   const j = await r.json();
+  const created = !sessionId && j.session_id;
   if (j.session_id) { sessionId = j.session_id; localStorage.setItem("pc_session", sessionId); }
   if (j.reply) {
     const m = j.reply.meta || {};
@@ -216,8 +244,9 @@ document.getElementById("f").onsubmit = async (ev) => {
   } else {
     add("system", j.error || "(no reply)");
   }
+  if (created) loadSessions();
 };
-info(); loadModels(); loadSettings(); loadHistory();
+info(); loadModels(); loadSettings(); loadSessions(); loadHistory();
 </script>
 </body></html>
 """
@@ -297,12 +326,16 @@ def _make_handler(dash: "Dashboard"):
 
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
+            # public: landing page and health check
             if path in ("/", "/index.html"):
                 self._write(200, _INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
                 return
             if path == "/healthz":
                 self._json(200, {"ok": True, "ts": time.time()})
                 return
+            # everything else under /api or /v1 is data-bearing — enforce auth
+            if (path.startswith("/api/") or path.startswith("/v1/")) and not self._auth_ok():
+                self._json(401, {"error": "unauthorized"}); return
             if path == "/api/info":
                 self._json(200, dash.gateway.info())
                 return
@@ -380,7 +413,7 @@ def _make_handler(dash: "Dashboard"):
                 (m for m in reversed(messages) if (m.get("role") == "user")), None)
             if not last_user:
                 self._json(400, {"error": "no user message"}); return
-            session_id = (body.get("user") or body.get("session_id")
+            session_id = (body.get("session_id") or body.get("user")
                           or f"openai-{uuid.uuid4().hex[:8]}")
             agent_override, model_override = _resolve_openai_model(
                 dash.gateway, body.get("model"))
@@ -391,7 +424,49 @@ def _make_handler(dash: "Dashboard"):
                     agent=agent_override, model=model_override)
             except Exception as e:  # noqa: BLE001
                 self._json(500, {"error": str(e)}); return
-            self._json(200, _openai_response(body, reply))
+            if body.get("stream"):
+                self._stream_openai_response(body, reply)
+            else:
+                self._json(200, _openai_response(body, reply))
+
+        def _stream_openai_response(self, req: dict[str, Any], reply: Message) -> None:
+            """Emit a minimal OpenAI-compatible SSE stream.
+
+            This is not true per-token streaming — the underlying provider
+            has already produced the full text synchronously. We split the
+            response into coarse chunks to keep the wire format compatible
+            with OpenAI SDK clients that loop over `response.iter_lines`."""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            # close the socket after [DONE] so the client knows the stream ended
+            # (without Transfer-Encoding: chunked, EOF is our only terminator)
+            self.send_header("Connection", "close")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.close_connection = True
+
+            base = {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": req.get("model") or reply.agent or "pythonclaw",
+            }
+
+            def send_chunk(delta: dict[str, Any], finish: str | None = None) -> None:
+                payload = {**base, "choices": [{"index": 0, "delta": delta,
+                                                 "finish_reason": finish}]}
+                self.wfile.write(b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n")
+                self.wfile.flush()
+
+            send_chunk({"role": "assistant"})
+            text = reply.content or ""
+            step = max(64, len(text) // 8 or 1)
+            for i in range(0, len(text), step):
+                send_chunk({"content": text[i:i + step]})
+            send_chunk({}, finish="stop")
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
 
         def _handle_settings_update(self) -> None:
             body = self._read_json() or {}

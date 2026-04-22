@@ -240,6 +240,79 @@ def test_gateway_loads_dotenv() -> None:
         os.environ.pop("PYTHONCLAW_TEST_ENV_KEY", None)
 
 
+def test_sessions_are_persisted() -> None:
+    """Regression: /api/sessions used to always return empty."""
+    with tempfile.TemporaryDirectory() as d:
+        gw = Gateway(_fresh_config(Path(d)))
+        wc = gw.channels["webchat"]
+        r1 = wc.submit("first")  # type: ignore[attr-defined]
+        r2 = wc.submit("second", session_id=r1.session_id)  # type: ignore[attr-defined]
+        assert r1.session_id == r2.session_id
+        sessions = gw.memory.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0].id == r1.session_id
+        assert sessions[0].channel == "webchat"
+
+
+def test_get_endpoints_require_auth() -> None:
+    import urllib.error
+    with tempfile.TemporaryDirectory() as d:
+        cfg = _fresh_config(Path(d))
+        cfg.raw["gateway"]["auth_token"] = "s3cret"
+        gw = Gateway(cfg); dash = Dashboard(gw); gw.start(); dash.start()
+        try:
+            port = dash._server.server_address[1]  # type: ignore[union-attr]
+            # public endpoints still open
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=3) as r:
+                assert r.status == 200
+
+            for path in ("/api/info", "/api/sessions", "/api/models",
+                         "/api/settings", "/v1/models"):
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=3)
+                except urllib.error.HTTPError as e:
+                    assert e.code == 401, f"{path}: expected 401, got {e.code}"
+                else:
+                    raise AssertionError(f"{path} returned 200 without auth")
+
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/info",
+                headers={"Authorization": "Bearer s3cret"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                assert r.status == 200
+        finally:
+            dash.stop(); gw.stop()
+
+
+def test_openai_completions_streaming() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        gw = Gateway(_fresh_config(Path(d)))
+        dash = Dashboard(gw); gw.start(); dash.start()
+        try:
+            port = dash._server.server_address[1]  # type: ignore[union-attr]
+            payload = json.dumps({
+                "model": "pi", "stream": True,
+                "messages": [{"role": "user", "content": "stream me"}],
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/chat/completions", data=payload,
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                assert r.headers.get("Content-Type", "").startswith("text/event-stream")
+                raw = r.read().decode("utf-8")
+            # must contain at least one SSE chunk and the DONE sentinel
+            assert "data: " in raw
+            assert "[DONE]" in raw
+            # parse the first chunk to verify shape
+            first = next(line for line in raw.split("\n")
+                         if line.startswith("data: ") and "[DONE]" not in line)
+            chunk = json.loads(first[len("data: "):])
+            assert chunk["object"] == "chat.completion.chunk"
+            assert chunk["choices"][0]["delta"].get("role") == "assistant"
+        finally:
+            dash.stop(); gw.stop()
+
+
 def test_dashboard_http() -> None:
     with tempfile.TemporaryDirectory() as d:
         gw = Gateway(_fresh_config(Path(d)))
@@ -310,5 +383,8 @@ if __name__ == "__main__":
     test_ls_and_read_file_tools(); print("test_ls_and_read_file_tools OK")
     test_setup_wizard_non_interactive(); print("test_setup_wizard_non_interactive OK")
     test_gateway_loads_dotenv(); print("test_gateway_loads_dotenv OK")
+    test_sessions_are_persisted(); print("test_sessions_are_persisted OK")
+    test_get_endpoints_require_auth(); print("test_get_endpoints_require_auth OK")
+    test_openai_completions_streaming(); print("test_openai_completions_streaming OK")
     test_dashboard_http(); print("test_dashboard_http OK")
     print("all tests passed")

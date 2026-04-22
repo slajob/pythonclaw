@@ -210,15 +210,35 @@ curl -s http://127.0.0.1:18789/v1/models    # OpenAI-compatible
 ### OpenAI-compatible API
 
 ```bash
+# non-streaming
 curl -s http://127.0.0.1:18789/v1/chat/completions \
   -H "content-type: application/json" \
   -d '{"model":"pi","messages":[{"role":"user","content":"hi"}]}'
+
+# streaming (SSE, OpenAI SDK-compatible)
+curl -sN http://127.0.0.1:18789/v1/chat/completions \
+  -H "content-type: application/json" \
+  -d '{"model":"pi","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 Point any OpenAI SDK (Python / JS / langchain / …) at
 `http://127.0.0.1:18789/v1` with `api_key="pythonclaw"` (or your configured
 `auth_token`) and it will talk to the gateway. The `model` field is mapped to
 a configured agent or a concrete model on a provider's `allowed_models` list.
+
+> **Note on streaming:** the underlying provider responds synchronously and
+> pythonclaw chunks the final text into SSE events. It's wire-compatible with
+> clients that iterate over SSE chunks but not token-by-token real-time.
+
+### Authentication
+
+Set `gateway.auth_token` in the config (or via `pythonclaw setup`) and the
+dashboard will require `Authorization: Bearer <token>` on **every** `/api/*`
+and `/v1/*` endpoint (`/` and `/healthz` stay public). This is important:
+anything that reads conversations or settings — not just chat POSTs — is
+gated. When host-access tools (`shell`/`ls`/`read_file`) are enabled the
+gateway **warns on startup** if `auth_token` is empty or the host isn't
+loopback.
 
 ## Configuration
 
