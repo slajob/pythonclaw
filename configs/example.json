@@ -1,0 +1,55 @@
+{
+  "gateway": {
+    "name": "pythonclaw",
+    "host": "127.0.0.1",
+    "port": 18789,
+    "data_dir": "./.pythonclaw",
+    "auth_token": null
+  },
+  "router": {
+    "default_agent": "pi",
+    "rules": [
+      { "match": { "startswith": "@code" }, "agent": "coder" },
+      { "match": { "startswith": "@pi" },   "agent": "pi" }
+    ]
+  },
+  "agents": {
+    "pi": {
+      "provider": "echo",
+      "system": "You are Pi, a helpful AI coding assistant.",
+      "tools": ["time", "calc", "web_search"]
+    },
+    "coder": {
+      "provider": "echo",
+      "system": "You are Coder, a senior software engineer.",
+      "tools": ["time", "calc"]
+    }
+  },
+  "providers": {
+    "echo": { "type": "echo" },
+    "openai": {
+      "type": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o-mini"
+    },
+    "anthropic": {
+      "type": "anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "model": "claude-sonnet-4-6"
+    }
+  },
+  "channels": {
+    "webchat": { "type": "webchat", "enabled": true },
+    "cli":     { "type": "cli",     "enabled": false },
+    "discord": { "type": "discord", "enabled": false, "token_env": "DISCORD_TOKEN" },
+    "telegram":{ "type": "telegram","enabled": false, "token_env": "TELEGRAM_BOT_TOKEN" },
+    "slack":   { "type": "slack",   "enabled": false, "token_env": "SLACK_BOT_TOKEN" }
+  },
+  "memory": {
+    "engine": "sqlite",
+    "path": "./.pythonclaw/memory.db",
+    "max_messages_per_session": 200
+  }
+}

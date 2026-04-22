@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pythonclaw"
+version = "0.1.0"
+description = "A Python clone of OpenClaw: a self-hosted gateway that connects messaging channels to AI agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "pythonclaw contributors" }]
+keywords = ["ai", "gateway", "agent", "chat", "openclaw"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: OS Independent",
+  "Topic :: Communications :: Chat",
+]
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+pythonclaw = "pythonclaw.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pythonclaw*"]
