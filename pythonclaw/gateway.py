@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from . import channels as chan_mod
+from . import dotenv
 from . import providers as prov_mod
+from . import tools as tool_registry
 from .agents import Agent, Router
 from .config import Config
 from .memory import SqliteMemory
 from .providers.base import Provider
-from .session import Message
+from .session import Message, Session
 
 
 log = logging.getLogger("pythonclaw.gateway")
@@ -32,6 +34,8 @@ class Gateway:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._ensure_data_dir()
+        self._load_dotenv()
+        tool_registry.configure(config.tools)
         self.memory = self._build_memory()
         self.providers: dict[str, Provider] = self._build_providers()
         self.agents: dict[str, Agent] = self._build_agents()
@@ -39,11 +43,51 @@ class Gateway:
         self.channels: dict[str, chan_mod.Channel] = self._build_channels()
         self._session_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
         self._locks_mu = threading.Lock()
+        self._safety_warnings()
+
+    def _safety_warnings(self) -> None:
+        """Print loud warnings for dangerous combinations.
+
+        Exposed-host + enabled shell tools + no auth token = trivially remotely
+        exploitable. We warn at startup so operators notice even when logs are
+        ignored.
+        """
+        tools_cfg = self.config.tools or {}
+        host_access_enabled = any(
+            (tools_cfg.get(n) or {}).get("enabled")
+            for n in ("shell", "ls", "read_file")
+        )
+        if not host_access_enabled:
+            return
+        host = self.config.gateway.get("host", "127.0.0.1")
+        has_auth = bool(self.config.gateway.get("auth_token"))
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            log.warning(
+                "SECURITY: host-access tools (shell/ls/read_file) are enabled "
+                "AND gateway listens on %s. Any host-reachable client can run "
+                "these tools.", host)
+        if not has_auth:
+            log.warning(
+                "SECURITY: host-access tools (shell/ls/read_file) are enabled "
+                "but gateway.auth_token is unset. Set auth_token in the "
+                "config so POST /api/chat requires a bearer token.")
 
     # ------------------------------------------------------------------ boot
     def _ensure_data_dir(self) -> None:
         d = self.config.gateway.get("data_dir", "./.pythonclaw")
         Path(d).mkdir(parents=True, exist_ok=True)
+
+    def _load_dotenv(self) -> None:
+        """Pick up secrets written by the setup wizard.
+
+        The file lives at ``<data_dir>/.env`` and contains ``KEY="value"``
+        lines. Existing env vars win so CI / shell exports keep priority.
+        """
+        data_dir = Path(self.config.gateway.get("data_dir", "./.pythonclaw"))
+        env_path = data_dir / ".env"
+        if env_path.exists():
+            dotenv.apply_to_env(dotenv.load(env_path))
+            log.debug("loaded env from %s", env_path)
 
     def _build_memory(self) -> SqliteMemory:
         mem = self.config.memory
@@ -120,6 +164,14 @@ class Gateway:
         with lock:
             agent_name = self.router.pick(msg)
             agent = self.agents.get(agent_name) or next(iter(self.agents.values()))
+            # upsert the session record so /api/sessions and list_sessions() work.
+            # we re-write on every message so the agent tag stays current — it
+            # can change between turns via an explicit meta.agent override.
+            if self.memory.get_session(msg.session_id) is None:
+                self.memory.put_session(Session(
+                    id=msg.session_id,
+                    channel=msg.channel or "unknown",
+                    user=msg.user, agent=agent.name))
             reply = agent.handle(msg, self.memory)
             return reply
 

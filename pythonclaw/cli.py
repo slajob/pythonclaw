@@ -7,6 +7,7 @@ Subcommands (modelled loosely on the OpenClaw CLI):
     pythonclaw send     --text "hi"         # one-shot message through gateway
     pythonclaw info     [--config PATH]     # print agents/providers/channels
     pythonclaw init     [--path PATH]       # write a starter config
+    pythonclaw setup    [--config PATH]     # interactive onboarding (OpenAI / Telegram)
     pythonclaw version
 """
 from __future__ import annotations
@@ -50,6 +51,18 @@ def _build_parser() -> argparse.ArgumentParser:
     n = sub.add_parser("init", help="write a starter config")
     n.add_argument("--path", default="./pythonclaw.config.json")
 
+    w = sub.add_parser("setup", help="interactive onboarding (OpenAI, Telegram)")
+    w.add_argument("--config", default="./pythonclaw.config.json")
+    w.add_argument("--data-dir", default="./.pythonclaw")
+    w.add_argument("--non-interactive", action="store_true",
+                   help="skip prompts; take answers from the --* flags below")
+    w.add_argument("--openai-key", default=None)
+    w.add_argument("--openai-model", default="gpt-4o")
+    w.add_argument("--gpt-default", action="store_true",
+                   help='make "gpt" the default router agent')
+    w.add_argument("--telegram-token", default=None)
+    w.add_argument("--enable-telegram", action="store_true")
+
     sub.add_parser("version", help="print version and exit")
     return p
 
@@ -71,6 +84,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
     if args.cmd == "init":
         return _cmd_init(args.path)
+    if args.cmd == "setup":
+        return _cmd_setup(args)
     cfg = _load_config(args.config)
     if args.cmd == "info":
         return _cmd_info(cfg)
@@ -104,6 +119,34 @@ def _cmd_init(path: str) -> int:
     else:
         dst.write_text(json.dumps(Config.default().raw, indent=2), encoding="utf-8")
     print(f"[pythonclaw] wrote {dst}")
+    return 0
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    from .setup import Answers, apply, interactive_wizard
+    cfg_path = Path(args.config)
+    data_dir = Path(args.data_dir)
+    if args.non_interactive:
+        answers = Answers(
+            config_path=cfg_path,
+            data_dir=data_dir,
+            openai_key=args.openai_key or None,
+            openai_model=args.openai_model or "gpt-4o",
+            make_gpt_default=bool(args.gpt_default),
+            telegram_token=args.telegram_token or None,
+            enable_telegram=bool(args.enable_telegram),
+        )
+    else:
+        answers = interactive_wizard(default_config=cfg_path, default_data_dir=data_dir)
+    summary = apply(answers)
+    print("\n[pythonclaw] setup complete")
+    print(f"  config:   {summary['config']}")
+    print(f"  data dir: {summary['data_dir']}")
+    if summary.get("env_updated_keys"):
+        print(f"  env file: {summary['env_file']} (updated: {', '.join(summary['env_updated_keys'])})")
+    print(f"  openai:   {'yes' if summary['openai_configured'] else 'no'}")
+    print(f"  telegram: {'yes' if summary['telegram_configured'] else 'no'}")
+    print(f"\nNext: python -m pythonclaw run --config {summary['config']}")
     return 0
 
 

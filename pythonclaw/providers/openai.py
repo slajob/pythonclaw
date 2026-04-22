@@ -12,16 +12,34 @@ from .base import CompletionRequest, CompletionResult, Provider, ProviderError
 
 class OpenAIProvider(Provider):
     def __init__(self, name: str, base_url: str, api_key: str | None,
-                 model: str, timeout: float = 60) -> None:
+                 model: str, timeout: float = 60,
+                 allowed_models: list[str] | None = None) -> None:
         super().__init__(name=name)
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        self.allowed_models = list(allowed_models) if allowed_models else []
+
+    def info(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "type": self.__class__.__name__,
+            "base_url": self.base_url,
+            "default_model": self.model,
+            "allowed_models": self.allowed_models or [self.model],
+            "has_key": bool(self.api_key),
+        }
 
     def complete(self, req: CompletionRequest) -> CompletionResult:
+        requested = req.model or self.model
+        if self.allowed_models and requested not in self.allowed_models:
+            raise ProviderError(
+                f"{self.name}: model {requested!r} not in allowed_models "
+                f"{self.allowed_models!r}"
+            )
         body: dict[str, Any] = {
-            "model": req.model or self.model,
+            "model": requested,
             "messages": self.to_chat(req.messages, req.system),
             "temperature": req.temperature,
             "max_tokens": req.max_tokens,

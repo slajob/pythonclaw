@@ -61,6 +61,10 @@ class Router:
         return cls(default_agent=default, rules=rules)
 
     def pick(self, msg: Message) -> str:
+        # explicit override from the inbound message wins over rules
+        override = (msg.meta or {}).get("agent")
+        if override:
+            return override
         for rule in self.rules:
             if rule.matches(msg):
                 return rule.agent

@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import ast
 import operator
+import os
+import shlex
+import subprocess
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -131,11 +135,228 @@ web_search_tool = Tool(
 )
 
 
+# --- host access: shell / ls / read_file -----------------------------------
+#
+# Everything below is DISABLED by default. It is enabled by the ``tools``
+# section of the gateway config via :func:`configure` (called from Gateway).
+# The tools are allowlist-based; an empty allowlist means "deny". A single
+# ``"*"`` entry means "allow all" — use with care.
+
+@dataclass
+class _ShellState:
+    enabled: bool = False
+    allowed_cmds: list[str] = field(default_factory=list)  # basenames or "*"
+    denied_cmds: list[str] = field(default_factory=lambda: [
+        "rm", "rmdir", "mkfs", "mkfs.ext4", "dd", "shutdown", "reboot",
+        "poweroff", "halt", "passwd", "sudo", "su", "chmod", "chown",
+    ])
+    cwd: str | None = None
+    timeout: float = 10.0
+    max_output_bytes: int = 16384
+
+
+@dataclass
+class _FsState:
+    enabled: bool = False
+    allowed_paths: list[str] = field(default_factory=list)
+    max_bytes: int = 65536
+
+
+_shell_state = _ShellState()
+_ls_state = _FsState()
+_read_state = _FsState()
+
+
+def _path_allowed(path: str, roots: list[str]) -> Path | None:
+    """Resolve ``path`` and return it iff it lives under one of ``roots``.
+
+    ``roots`` are resolved once and compared by path components (no string
+    prefix tricks like /home/alice-bad vs /home/alice).
+    """
+    try:
+        target = Path(path).expanduser().resolve()
+    except OSError:
+        return None
+    for r in roots:
+        try:
+            root = Path(r).expanduser().resolve()
+        except OSError:
+            continue
+        try:
+            target.relative_to(root)
+            return target
+        except ValueError:
+            continue
+    return None
+
+
+def _shell_tool(args: dict[str, Any]) -> str:
+    st = _shell_state
+    if not st.enabled:
+        return "error: shell tool disabled (set tools.shell.enabled=true)"
+    cmd = args.get("cmd") or args.get("command")
+    if not cmd:
+        return "error: missing 'cmd'"
+    try:
+        parts = shlex.split(cmd) if isinstance(cmd, str) else [str(x) for x in cmd]
+    except ValueError as e:
+        return f"error: bad command: {e}"
+    if not parts:
+        return "error: empty command"
+    head = os.path.basename(parts[0])
+    if head in st.denied_cmds:
+        return f"error: command {head!r} is denied"
+    if st.allowed_cmds != ["*"] and head not in st.allowed_cmds:
+        return f"error: command {head!r} not in allowed_cmds"
+    try:
+        result = subprocess.run(  # noqa: S603
+            parts, cwd=st.cwd, capture_output=True, timeout=st.timeout,
+            text=True, errors="replace", check=False)
+    except subprocess.TimeoutExpired:
+        return f"error: timeout after {st.timeout}s"
+    except FileNotFoundError:
+        return f"error: command not found: {parts[0]}"
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+    out = result.stdout or ""
+    if result.stderr:
+        out = (out + ("\n" if out else "") + "[stderr]\n" + result.stderr).rstrip()
+    if len(out) > st.max_output_bytes:
+        out = out[:st.max_output_bytes] + f"\n[truncated; total {len(out)} bytes]"
+    if result.returncode != 0:
+        out = f"{out}\n[exit={result.returncode}]".strip()
+    return out or f"(exit={result.returncode})"
+
+
+shell_tool = Tool(
+    name="shell",
+    description=("Run a shell command on the host. Disabled unless enabled in "
+                 "config; allowlisted via tools.shell.allowed_cmds."),
+    parameters={
+        "type": "object",
+        "properties": {
+            "cmd": {"type": "string", "description": "The command to run."},
+        },
+        "required": ["cmd"],
+        "additionalProperties": False,
+    },
+    run=_shell_tool,
+)
+
+
+def _ls_tool(args: dict[str, Any]) -> str:
+    st = _ls_state
+    if not st.enabled:
+        return "error: ls tool disabled (set tools.ls.enabled=true)"
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: missing 'path'"
+    target = _path_allowed(path, st.allowed_paths)
+    if target is None:
+        return f"error: path not in allowed_paths: {st.allowed_paths}"
+    try:
+        entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name))
+    except NotADirectoryError:
+        return f"error: not a directory: {target}"
+    except PermissionError:
+        return f"error: permission denied: {target}"
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+    lines: list[str] = [f"# {target}"]
+    for p in entries[:500]:
+        try:
+            st_ = p.stat()
+            size = st_.st_size if p.is_file() else "-"
+        except OSError:
+            size = "?"
+        kind = "d" if p.is_dir() else ("l" if p.is_symlink() else "f")
+        lines.append(f"{kind}\t{size}\t{p.name}")
+    if len(entries) > 500:
+        lines.append(f"# ... {len(entries) - 500} more entries truncated")
+    return "\n".join(lines)
+
+
+ls_tool = Tool(
+    name="ls",
+    description=("List a directory on the host (read-only). Restricted to "
+                 "tools.ls.allowed_paths."),
+    parameters={
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+    run=_ls_tool,
+)
+
+
+def _read_file_tool(args: dict[str, Any]) -> str:
+    st = _read_state
+    if not st.enabled:
+        return "error: read_file tool disabled (set tools.read_file.enabled=true)"
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: missing 'path'"
+    target = _path_allowed(path, st.allowed_paths)
+    if target is None:
+        return f"error: path not in allowed_paths: {st.allowed_paths}"
+    if not target.is_file():
+        return f"error: not a regular file: {target}"
+    try:
+        with target.open("rb") as f:
+            data = f.read(st.max_bytes + 1)
+    except PermissionError:
+        return f"error: permission denied: {target}"
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+    text = data[:st.max_bytes].decode("utf-8", errors="replace")
+    if len(data) > st.max_bytes:
+        text += f"\n[truncated at {st.max_bytes} bytes]"
+    return text
+
+
+read_file_tool = Tool(
+    name="read_file",
+    description=("Read a file from the host (read-only). Restricted to "
+                 "tools.read_file.allowed_paths."),
+    parameters={
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+    run=_read_file_tool,
+)
+
+
 REGISTRY: dict[str, Tool] = {
     "time": time_tool,
     "calc": calc_tool,
     "web_search": web_search_tool,
+    "shell": shell_tool,
+    "ls": ls_tool,
+    "read_file": read_file_tool,
 }
+
+
+def configure(cfg: dict[str, Any] | None) -> None:
+    """Apply per-tool configuration from the ``tools`` section of the gateway
+    config. Idempotent — can be called again to re-apply new config."""
+    cfg = cfg or {}
+    sh = cfg.get("shell") or {}
+    _shell_state.enabled = bool(sh.get("enabled", False))
+    _shell_state.allowed_cmds = list(sh.get("allowed_cmds") or [])
+    if "denied_cmds" in sh:
+        _shell_state.denied_cmds = list(sh["denied_cmds"])
+    _shell_state.cwd = sh.get("cwd")
+    _shell_state.timeout = float(sh.get("timeout", 10.0))
+    _shell_state.max_output_bytes = int(sh.get("max_output_bytes", 16384))
+
+    for name, state in (("ls", _ls_state), ("read_file", _read_state)):
+        entry = cfg.get(name) or {}
+        state.enabled = bool(entry.get("enabled", False))
+        state.allowed_paths = list(entry.get("allowed_paths") or [])
+        state.max_bytes = int(entry.get("max_bytes", 65536))
 
 
 def get(name: str) -> Tool | None:

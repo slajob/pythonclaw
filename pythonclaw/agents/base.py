@@ -55,11 +55,12 @@ class Agent:
             return reply
 
         history = memory.history(inbound.session_id) if inbound.session_id else [inbound]
+        model_override = (inbound.meta or {}).get("model")
         req = CompletionRequest(
             messages=history,
             system=self.system or None,
             tools=tool_registry.list_specs(self.tools) if self.tools else None,
-            model=self.model,
+            model=model_override or self.model,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
         )

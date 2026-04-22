@@ -18,7 +18,8 @@ class EchoProvider(Provider):
         user_text = last_user.content if last_user else ""
         n_prior = sum(1 for m in req.messages if m.role != "system")
         sys_blurb = f" [sys: {req.system[:40]}...]" if req.system else ""
+        model = req.model or "echo-1"
         text = (f"(echo{sys_blurb}) You said: {user_text!r}. "
                 f"History: {n_prior} msgs.")
-        return CompletionResult(text=text, provider=self.name, model="echo-1",
+        return CompletionResult(text=text, provider=self.name, model=model,
                                 usage={"prompt_tokens": 0, "completion_tokens": 0})

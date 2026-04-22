@@ -35,10 +35,16 @@ class WebChatChannel(Channel):
             return s
 
     def submit(self, text: str, session_id: str | None = None,
-               user: str | None = None) -> Message:
+               user: str | None = None, model: str | None = None,
+               agent: str | None = None) -> Message:
         s = self.ensure_session(session_id, user)
+        meta: dict[str, Any] = {}
+        if model:
+            meta["model"] = model
+        if agent:
+            meta["agent"] = agent
         msg = Message(role="user", content=text, channel=self.name,
-                      session_id=s.id, user=s.user)
+                      session_id=s.id, user=s.user, meta=meta)
         return self._dispatch(msg)
 
     def send(self, reply: Message) -> None:  # no-op: replies go over HTTP
