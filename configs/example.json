@@ -11,7 +11,8 @@
     "rules": [
       { "match": { "startswith": "@code" }, "agent": "coder" },
       { "match": { "startswith": "@pi" },   "agent": "pi" },
-      { "match": { "startswith": "@gpt" },  "agent": "gpt" }
+      { "match": { "startswith": "@gpt" },  "agent": "gpt" },
+      { "match": { "startswith": "@ops" },  "agent": "ops" }
     ]
   },
   "agents": {
@@ -30,6 +31,11 @@
       "system": "You are GPT, a helpful AI assistant.",
       "model": "gpt-4o",
       "tools": ["time", "calc", "web_search"]
+    },
+    "ops": {
+      "provider": "echo",
+      "system": "You can run shell commands and inspect files on the host.",
+      "tools": ["time", "shell", "ls", "read_file"]
     }
   },
   "providers": {
@@ -54,6 +60,32 @@
     "discord": { "type": "discord", "enabled": false, "token_env": "DISCORD_TOKEN" },
     "telegram":{ "type": "telegram","enabled": false, "token_env": "TELEGRAM_BOT_TOKEN" },
     "slack":   { "type": "slack",   "enabled": false, "token_env": "SLACK_BOT_TOKEN" }
+  },
+  "tools": {
+    "shell": {
+      "enabled": false,
+      "allowed_cmds": [
+        "ls", "cat", "echo", "pwd", "whoami", "date", "uname",
+        "find", "head", "tail", "wc", "stat", "du", "df", "env",
+        "hostname", "uptime", "ps", "free"
+      ],
+      "denied_cmds": [
+        "rm", "rmdir", "mkfs", "dd", "shutdown", "reboot",
+        "passwd", "sudo", "su", "chmod", "chown"
+      ],
+      "cwd": null,
+      "timeout": 10,
+      "max_output_bytes": 16384
+    },
+    "ls": {
+      "enabled": false,
+      "allowed_paths": ["/home", "/tmp"]
+    },
+    "read_file": {
+      "enabled": false,
+      "allowed_paths": ["/home", "/tmp"],
+      "max_bytes": 65536
+    }
   },
   "memory": {
     "engine": "sqlite",

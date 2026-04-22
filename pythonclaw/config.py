@@ -101,3 +101,7 @@ class Config:
     @property
     def memory(self) -> dict[str, Any]:
         return self.raw.get("memory", {})
+
+    @property
+    def tools(self) -> dict[str, Any]:
+        return self.raw.get("tools", {})

@@ -18,6 +18,7 @@ from typing import Any
 
 from . import channels as chan_mod
 from . import providers as prov_mod
+from . import tools as tool_registry
 from .agents import Agent, Router
 from .config import Config
 from .memory import SqliteMemory
@@ -32,6 +33,7 @@ class Gateway:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._ensure_data_dir()
+        tool_registry.configure(config.tools)
         self.memory = self._build_memory()
         self.providers: dict[str, Provider] = self._build_providers()
         self.agents: dict[str, Agent] = self._build_agents()

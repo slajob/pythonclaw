@@ -35,8 +35,9 @@ is optional for YAML configs).
   (`openai`, Azure, LM Studio, Ollama, OpenRouter, Together, …), Anthropic.
 - **Memory** (`pythonclaw.memory.SqliteMemory`) — SQLite-backed, per-session
   transcript with automatic pruning.
-- **Tools** (`pythonclaw.tools`) — `time`, `calc`, `web_search`. Invoke via
-  `@tool name arg=value` or `@tool name {"expr":"1+1"}`.
+- **Tools** (`pythonclaw.tools`) — `time`, `calc`, `web_search`, plus host
+  access (`shell`, `ls`, `read_file`) that is disabled until you opt in.
+  Invoke via `@tool name arg=value` or `@tool name {"expr":"1+1"}`.
 - **Dashboard + API** (`pythonclaw.web.Dashboard`) — tiny SPA at `/`, JSON at
   `/api/*`, and an OpenAI-compatible `/v1/chat/completions`.
 
@@ -65,6 +66,54 @@ python -m pythonclaw send --text "@tool calc expr=2+3*4"  # -> 14.0
 python -m pythonclaw chat                                 # interactive REPL
 python -m pythonclaw chat --agent coder                   # force agent
 ```
+
+### Host access (shell / ls / read_file)
+
+pythonclaw can run commands on the host and read files from it, but **every
+host-touching tool is disabled by default**. Opt in per-tool in the `tools`
+section of your config:
+
+```json
+"tools": {
+  "shell": {
+    "enabled": true,
+    "allowed_cmds": ["ls", "cat", "echo", "pwd", "whoami", "uname",
+                     "find", "head", "tail", "wc", "stat", "du", "df"],
+    "denied_cmds": ["rm", "mkfs", "dd", "shutdown", "sudo", "passwd"],
+    "cwd": null,
+    "timeout": 10,
+    "max_output_bytes": 16384
+  },
+  "ls":        { "enabled": true, "allowed_paths": ["/home", "/tmp"] },
+  "read_file": { "enabled": true, "allowed_paths": ["/home", "/tmp"],
+                 "max_bytes": 65536 }
+}
+```
+
+Then attach the tools to an agent and call them from chat:
+
+```bash
+# list /home:
+curl -s -X POST http://127.0.0.1:18789/api/chat \
+  -H 'content-type: application/json' \
+  -d '{"agent":"ops","text":"@tool ls {\"path\":\"/home\"}"}'
+
+# run a whitelisted shell command:
+curl -s -X POST http://127.0.0.1:18789/api/chat \
+  -H 'content-type: application/json' \
+  -d '{"agent":"ops","text":"@tool shell {\"cmd\":\"ls -la /home\"}"}'
+```
+
+**Safety model.** The shell tool parses the command with `shlex` and runs it
+*without* `shell=True`, so shell meta-characters (`|`, `>`, `;`, backticks,
+`&&`) don't work. Every command's basename is checked against
+`allowed_cmds` first and `denied_cmds` second. `ls` / `read_file` resolve
+their target path and require it to live under one of `allowed_paths`
+(symlink-safe). A `cmd`/`path` outside policy returns `error: ...` and never
+touches the host. Still: **if you enable `shell` with a permissive allowlist,
+anyone who can POST to `/api/chat` can run those commands.** Set
+`gateway.auth_token` to require a bearer token, keep `gateway.host` on
+`127.0.0.1`, and keep the allowlist tight.
 
 ### Model selection
 

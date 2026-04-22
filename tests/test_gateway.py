@@ -17,7 +17,7 @@ from pythonclaw.session import Message, Session
 from pythonclaw.web.dashboard import Dashboard
 
 
-def _fresh_config(tmp: Path, port: int = 0) -> Config:
+def _fresh_config(tmp: Path, port: int = 0, tools_cfg: dict | None = None) -> Config:
     data = {
         "gateway": {"host": "127.0.0.1", "port": port, "data_dir": str(tmp)},
         "router": {"default_agent": "pi",
@@ -29,12 +29,16 @@ def _fresh_config(tmp: Path, port: int = 0) -> Config:
                       "tools": ["time", "calc"]},
             "gpt": {"provider": "echo", "system": "gpt-sys",
                     "model": "gpt-4o", "tools": []},
+            "ops": {"provider": "echo", "system": "ops-sys",
+                    "tools": ["shell", "ls", "read_file"]},
         },
         "providers": {"echo": {"type": "echo"}},
         "channels": {"webchat": {"type": "webchat", "enabled": True}},
         "memory": {"engine": "sqlite", "path": str(tmp / "mem.db"),
                    "max_messages_per_session": 50},
     }
+    if tools_cfg is not None:
+        data["tools"] = tools_cfg
     return Config(raw=data)
 
 
@@ -111,6 +115,78 @@ def test_openai_provider_allowed_models() -> None:
         raise AssertionError("expected ProviderError")
 
 
+def test_shell_tool_disabled_by_default() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        gw = Gateway(_fresh_config(Path(d)))  # no tools config
+        session = Session.new(channel="test", user="u")
+        reply = gw.handle(Message(
+            role="user", content='@tool shell {"cmd": "echo hi"}',
+            channel="test", session_id=session.id,
+            meta={"agent": "ops"}))
+        assert "disabled" in reply.content
+
+
+def test_shell_tool_allowlist() -> None:
+    tools_cfg = {
+        "shell": {"enabled": True, "allowed_cmds": ["echo"], "timeout": 5},
+    }
+    with tempfile.TemporaryDirectory() as d:
+        gw = Gateway(_fresh_config(Path(d), tools_cfg=tools_cfg))
+        session = Session.new(channel="test", user="u")
+
+        # allowed
+        reply = gw.handle(Message(
+            role="user", content='@tool shell {"cmd": "echo hello-host"}',
+            channel="test", session_id=session.id,
+            meta={"agent": "ops"}))
+        assert "hello-host" in reply.content
+
+        # not on allowlist
+        reply = gw.handle(Message(
+            role="user", content='@tool shell {"cmd": "whoami"}',
+            channel="test", session_id=session.id,
+            meta={"agent": "ops"}))
+        assert "not in allowed_cmds" in reply.content
+
+
+def test_ls_and_read_file_tools() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        sandbox = Path(d) / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "a.txt").write_text("hello\n", encoding="utf-8")
+        (sandbox / "sub").mkdir()
+
+        tools_cfg = {
+            "ls": {"enabled": True, "allowed_paths": [str(sandbox)]},
+            "read_file": {"enabled": True, "allowed_paths": [str(sandbox)],
+                          "max_bytes": 1024},
+        }
+        gw = Gateway(_fresh_config(Path(d), tools_cfg=tools_cfg))
+        session = Session.new(channel="test", user="u")
+
+        reply = gw.handle(Message(
+            role="user", content=f'@tool ls {{"path": "{sandbox}"}}',
+            channel="test", session_id=session.id,
+            meta={"agent": "ops"}))
+        assert "a.txt" in reply.content
+        assert "sub" in reply.content
+
+        reply = gw.handle(Message(
+            role="user",
+            content=f'@tool read_file {{"path": "{sandbox / "a.txt"}"}}',
+            channel="test", session_id=session.id,
+            meta={"agent": "ops"}))
+        assert "hello" in reply.content
+
+        # path traversal rejected
+        reply = gw.handle(Message(
+            role="user",
+            content=f'@tool ls {{"path": "{sandbox / ".." / ".."}"}}',
+            channel="test", session_id=session.id,
+            meta={"agent": "ops"}))
+        assert "not in allowed_paths" in reply.content
+
+
 def test_dashboard_http() -> None:
     with tempfile.TemporaryDirectory() as d:
         gw = Gateway(_fresh_config(Path(d)))
@@ -171,5 +247,8 @@ if __name__ == "__main__":
     test_tool_call_dispatch(); print("test_tool_call_dispatch OK")
     test_model_and_agent_override(); print("test_model_and_agent_override OK")
     test_openai_provider_allowed_models(); print("test_openai_provider_allowed_models OK")
+    test_shell_tool_disabled_by_default(); print("test_shell_tool_disabled_by_default OK")
+    test_shell_tool_allowlist(); print("test_shell_tool_allowlist OK")
+    test_ls_and_read_file_tools(); print("test_ls_and_read_file_tools OK")
     test_dashboard_http(); print("test_dashboard_http OK")
     print("all tests passed")
